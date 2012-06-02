@@ -176,8 +176,9 @@ function expandString(str, cb)
   process.nextTick(function() {
     $.until(function() { return s.state === 'DONE' },
       $.apply(expandStringImpl, s), function(err) {
-        log('EXP: ' + s.out);
-        if (err) errx(5, err); cb(null, s.out);
+        log('EXP: ' + str + ' -> ' + s.out);
+        if (err) errx(5, err);
+        cb(null, s.out);
       });
   });
 }
@@ -249,11 +250,11 @@ function parseMakeFile(filename, lines, cb)
         var targs = str.trim();
         log('%% EXPAND 2 %% ' + m[2]);
         expandString(m[2], function(err, str) {
-          var deps = str.trim();
+          var deps = str.trim().split(/[ \t]+/).filter(function(x) { return x !== '' });
           log('### [' + filename + ':' + l + '] ' + 'TARGET DEF: ' + targs + ': ' + deps);
           target = {
             name: targs,
-            deps: deps.split(/[ \t]+/),
+            deps: deps,
             rules: []
           };
           return cb();
@@ -446,6 +447,27 @@ function dumpTargets(cb)
   cb();
 }
 
+function doThing(x)
+{
+  if (x === '.WAIT')
+    return;
+  var targ = T[x];
+  if (!targ)
+    errx(5, 'dont know how to build target: ' + x);
+  targ.deps.forEach(doThing);
+  log(x);
+}
+
+function doThings(cb)
+{
+  if (!argv._ || argv._.length < 1) return cb();
+  log('\n\n\nTHINGS: ' + argv._);
+  argv._.forEach(function (thi) {
+    doThing(thi);
+  });
+  errx(0, '');
+}
+
 $.series([
   readMakeFlags,
   readMakeArgs,
@@ -453,6 +475,8 @@ $.series([
   importEnvironment,
   findMakeFile,
   readMakeArgsMacros,
+
+  doThings,
 
   dumpMacros,
   dumpTargets
