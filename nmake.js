@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+
 var path = require('path');
 var fs = require('fs');
 var $ = require('async');
@@ -10,13 +11,19 @@ var argv = require('optimist').
   boolean('e').describe('e', 'Environment variables override assignments within makefiles').
   argv;
 
+var MAKE = {
+  name: 'MAKE',
+  value: process.argv[0] + ' ' + process.argv[1],
+  environment: true
+};
+
 var C = {
   implicit: '/usr/share/lib/make/make.rules',
   overenv: false,
   makefile: null
 };
 
-var M = {}; // Macros
+var M = { MAKE: MAKE }; // Macros
 var T = {}; // Targets
 var CM = {}; // Conditional Macros
 
@@ -447,25 +454,68 @@ function dumpTargets(cb)
   cb();
 }
 
-function doThing(x)
+function pad(len)
 {
+  var s = '';
+  while (s.length < len * 3)
+    s += ' ';
+  return s;
+}
+
+function doThing(x, depth, cb)
+{
+  if (!depth) depth = 1;
+
   if (x === '.WAIT')
-    return;
+    return cb();
+
   var targ = T[x];
+
+  log(pad(depth) + ' --> ' + x);
+  var cmac = CM[x];
+  if (cmac) {
+    Object.keys(cmac.macros).sort().forEach(function(cm) {
+      log(pad(depth) + '      \\ ' + cm + '= ' + cmac.macros[cm]);
+    });
+  }
+
   if (!targ)
     errx(5, 'dont know how to build target: ' + x);
-  targ.deps.forEach(doThing);
-  log(x);
+
+  var depq = $.queue(function(dep, cb) {
+    doThing(dep, depth + 1, cb);
+  }, 1);
+  depq.drain = function() {
+    var ruleq = $.queue(function(rule, cb) {
+      return expandString(rule, function(err, str) {
+        log(pad(depth) + '      : ' + str);
+        cb();
+      });
+    }, 1);
+    ruleq.drain = function() {
+      log(pad(depth) + ' <-- ' + x);
+      cb();
+    };
+    ruleq.push(targ.rules);
+    if (ruleq.length() === 0) cb();
+  };
+  depq.push(targ.deps);
+  if (depq.length() === 0) cb();
 }
 
 function doThings(cb)
 {
+  log(CM);
   if (!argv._ || argv._.length < 1) return cb();
-  log('\n\n\nTHINGS: ' + argv._);
-  argv._.forEach(function (thi) {
-    doThing(thi);
-  });
-  errx(0, '');
+
+  log('\n\n\nTHINGS: ' + argv._ + '\n');
+  var targq = $.queue(function(targ, cb) {
+    doThing(targ, 1, cb);
+  }, 1);
+  targq.drain = function() { cb('done'); };
+  argv._.forEach(function (thi) { targq.push(thi); });
+  if (targq.length() === 0)
+    cb('done');
 }
 
 $.series([

@@ -1,0 +1,8 @@
+
+ROOTDIRS= one two three four
+ROOT= /export/proto/
+TARGETDIRS= $(ROOTDIRS:%=$(ROOT)%)
+
+all:
+	echo $(TARGETDIRS)
+
