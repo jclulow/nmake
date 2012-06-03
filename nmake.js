@@ -27,6 +27,17 @@ var M = { MAKE: MAKE }; // Macros
 var T = {}; // Targets
 var CM = {}; // Conditional Macros
 
+// XXX WORST FUNCTION EVER
+function expandDynamic(str, dm)
+{
+  Object.keys(dm).forEach(function(dmk) {
+    var dmv = dm[dmk];
+    if (dmk === '@')
+      str = str.replace(/\$@/g, dmv);
+  });
+  return str;
+}
+
 function readMakeFlags(cb)
 {
   if (process.env.MAKEFLAGS === 'e')
@@ -78,8 +89,83 @@ function expandSubstring(str, cb)
       return expandString(M[str].value, cb);
       //cb(null, M[str].value);
     return cb(null, '');
+  } else {
+    var m = str.match(/^([a-zA-Z0-9_]+):([^%]*)%([^=]*)=([^%]*)%(.*)$/);
+    if (m) { // substitution!
+      var v = m[1];
+      var op = m[2];
+      var os = m[3];
+      var np = m[4];
+      var ns = m[5];
+      log('%%% SUB %%% VAR ' + v + ' OP ' + op + ' OS ' + os +
+        ' NP ' + np + ' NS ' + ns);
+      // lookup the macro value to substitute...
+      if (!M[v])
+        return cb(null, '');
+      // must fully expand the macro value before substituting
+      /*
+      $.series([
+        $.apply(expandString(M[v].value)),
+        $.apply(expandString(op)),
+        $.apply(expandString(os)),
+        $.apply(expandString(np)),
+        $.apply(expandString(ns))
+      ], function(err, results) { // XXX WORK MARKER -------------------
+        var terms = 
+      });*/
+      return expandString(M[v].value, function(err, str) {
+        var terms = str.split(/[ \t]+/);
+        terms = terms.map(function(x) {
+          x = x.trim();
+          if (op && x.substring(0, op.length - 1) === op) {
+            x = x.substring(op.length);
+            if (np) x = np + x;
+          } else if (np) x = np + x;
+          if (os && x.substring(x.length - os.length, x.length - 1) === os) {
+            x = x.substring(0, x.length - os.length - 1);
+            if (ns) x = x + ns;
+          } else if (ns) x = x + ns;
+          return x;
+          log('%%% ^     ... ' + x);
+        });
+        // return cb(null, terms.join(' '));
+        return expandString(terms.join(' '), cb);
+      });
+    }
+
+    var m = str.match(/^([a-zA-Z0-9_]+):([^=]+)=(.*)$/);
+    if (m) {
+      var v = m[1];
+      var os = m[2];
+      var ns = m[3];
+      log('#.# SUB %%% VAR ' + v + ' OLDSUF ' + os + ' NEWSUF ' + ns);
+      if (!M[v])
+        return cb(null, '');
+      // must fully expand the macro value before substituting
+      return expandString(M[v].value, function(err, str) {
+        var terms = str.split(/[ \t]+/);
+        terms = terms.map(function(x) {
+          x = x.trim();
+          if (os) { // if we have a suffix to replace...
+            if (x.substring(x.length - os.length) === os) {
+              // and it matches, then chop it off and replace with
+              //   the new suffix:
+              x = x.substring(0, x.length - os.length) + ns;
+            }
+          } else {
+            // no suffix to replace, so just stick the new suffix on.
+            x = x + ns;
+          }
+          log('#.# ^  ' + str + '   ... ' + x);
+          return x;
+        });
+        // return cb(null, terms.join(' '));
+        return expandString(terms.join(' '), cb);
+      });
+    }
+
+    errx(101, 'don\'t know how to expand: ' + str);
   }
-  return cb(null, '$(' + str + ')');
 }
 
 function expandStringImpl(s, cb)
@@ -122,6 +208,10 @@ function expandStringImpl(s, cb)
             break;
           case '$':
             s.out += '$';
+            s.state = 'REST';
+            break;
+          case '@':
+            s.out += '$' + c;
             s.state = 'REST';
             break;
           default:
@@ -277,6 +367,8 @@ function parseMakeFile(filename, lines, cb)
         var macname = xxxx[0].trim();
         var macval = xxxx[1].trim();
         cond.forEach(function (cone) {
+          if (!cone) return; // important: make seems to ignore conditional
+                            // macros with empty target names
           log('### CONDITIONAL MACRO (' + cone + ') --> ' + xxxx);
            if (!CM[cone]) {
              CM[cone] = {
@@ -326,14 +418,14 @@ function parseMakeFile(filename, lines, cb)
         }
         if (M[name]) {
           if (!C.overenv || M[name].environment === false) {
-            log('### [' + filename + ':' + l + '] ' + 'SET: ' + name + '= ' + val);
+            log('### [' + filename + ':' + l + '] ' + 'OVER SET: ' + name + '= ' + val);
             M[name].value = val;
           } else {
             log('### [' + filename + ':' + l + '] ' + 'IGNORE SET: ' + name + '= ' + val);
             log('### [' + filename + ':' + l + '] ' + 'INSTEAD, ENV: ' + name + '= ' + M[name].value);
           }
         } else {
-          log('### [' + filename + ':' + l + '] ' + 'SET: ' + name + '= ' + val);
+          log('### [' + filename + ':' + l + '] ' + 'NEW SET: ' + name + '= ' + val);
           M[name] = {
             name: name,
             value: val,
@@ -462,6 +554,32 @@ function pad(len)
   return s;
 }
 
+function doThingRules(x, rules, depth, cb)
+{
+  var ruleq = $.queue(function(rule, cb) {
+    return expandString(rule, function(err, str) {
+      var realstr = expandDynamic(str, {
+        '@': x
+      });
+      log(pad(depth) + '      : ' + realstr);
+      //log(pad(depth) + ' -------------------------');
+      // TODO exec()!
+      //log(pad(depth) + ' -------------------------');
+      cb();
+    });
+  }, 1);
+  ruleq.drain = function() {
+    log(pad(depth) + ' <- ' + x);
+    cb();
+  };
+  ruleq.push(rules);
+  if (ruleq.length() === 0) {
+    log(pad(depth) + '      # no rules!');
+    log(pad(depth) + ' <- ' + x);
+    cb();
+  }
+}
+
 function doThing(x, depth, cb)
 {
   if (!depth) depth = 1;
@@ -471,12 +589,35 @@ function doThing(x, depth, cb)
 
   var targ = T[x];
 
-  log(pad(depth) + ' --> ' + x);
+  log(pad(depth) + ' -> ' + x);
+  var REVERT_MACROS = {};
   var cmac = CM[x];
   if (cmac) {
     Object.keys(cmac.macros).sort().forEach(function(cm) {
       log(pad(depth) + '      \\ ' + cm + '= ' + cmac.macros[cm]);
+      if (M[cm]) {
+        REVERT_MACROS[cm] = M[cm].value;
+        M[cm].value = cmac.macros[cm];
+      } else {
+        REVERT_MACROS[cm] = null;
+        M[cm] = {
+          name: cm,
+          value: cmac.macros[cm],
+          environment: false
+        };
+      }
     });
+  }
+
+  var revertCb = function revertCb() {
+    Object.keys(REVERT_MACROS).sort().forEach(function(rm) {
+      log(pad(depth) + '      \\R ' + rm + '= ' + REVERT_MACROS[rm]);
+      if (REVERT_MACROS[rm] === null)
+        delete M[rm];
+      else
+        M[rm].value = REVERT_MACROS[rm];
+    });
+    cb();
   }
 
   if (!targ)
@@ -486,26 +627,19 @@ function doThing(x, depth, cb)
     doThing(dep, depth + 1, cb);
   }, 1);
   depq.drain = function() {
-    var ruleq = $.queue(function(rule, cb) {
-      return expandString(rule, function(err, str) {
-        log(pad(depth) + '      : ' + str);
-        cb();
-      });
-    }, 1);
-    ruleq.drain = function() {
-      log(pad(depth) + ' <-- ' + x);
-      cb();
-    };
-    ruleq.push(targ.rules);
-    if (ruleq.length() === 0) cb();
+    doThingRules(x, targ.rules, depth, revertCb);
   };
   depq.push(targ.deps);
-  if (depq.length() === 0) cb();
+  if (depq.length() === 0) {
+    log(pad(depth) + '      # no deps!');
+    doThingRules(x, targ.rules, depth, revertCb);
+    //log(pad(depth) + ' <- ' + x);
+    //cb();
+  }
 }
 
 function doThings(cb)
 {
-  log(CM);
   if (!argv._ || argv._.length < 1) return cb();
 
   log('\n\n\nTHINGS: ' + argv._ + '\n');
